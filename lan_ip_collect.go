@@ -180,7 +180,7 @@ func getVendor(mac string) string {
         }
 
         file, err := os.Open("oui.txt")
-        if err != nil {
+        if (err != nil) {
             fmt.Println("Error opening file:", err)
             os.Exit(1)
         }
@@ -227,9 +227,9 @@ func writeToExcel(macMap map[string][]string, macVendorMap map[string]string) {
 
     var entries []MacEntry
     for mac, ips := range macMap {
-        // 按IP地址最后一个8bit排序
+        // 按IP地址的所有八位组依次排序
         sort.Slice(ips, func(i, j int) bool {
-            return getLast8Bits(ips[i]) < getLast8Bits(ips[j])
+            return compareIPs(ips[i], ips[j])
         })
         entries = append(entries, MacEntry{
             Mac:    mac,
@@ -238,19 +238,21 @@ func writeToExcel(macMap map[string][]string, macVendorMap map[string]string) {
         })
     }
 
-    // 按第一个IP地址的最后一个8bit排序
+    // 按第一个IP地址的所有八位组依次排序
     sort.Slice(entries, func(i, j int) bool {
-        return getLast8Bits(entries[i].Ips[0]) < getLast8Bits(entries[j].Ips[0])
+        return compareIPs(entries[i].Ips[0], entries[j].Ips[0])
     })
 
     // 写入数据
     row := 2
     for i, entry := range entries {
-        f.SetCellValue(sheet, fmt.Sprintf("A%d", row), i+1)
-        f.SetCellValue(sheet, fmt.Sprintf("B%d", row), entry.Mac)
-        f.SetCellValue(sheet, fmt.Sprintf("C%d", row), strings.Join(entry.Ips, " "))
-        f.SetCellValue(sheet, fmt.Sprintf("D%d", row), entry.Vendor)
-        row++
+        for _, ip := range entry.Ips {
+            f.SetCellValue(sheet, fmt.Sprintf("A%d", row), i+1)
+            f.SetCellValue(sheet, fmt.Sprintf("B%d", row), entry.Mac)
+            f.SetCellValue(sheet, fmt.Sprintf("C%d", row), ip)
+            f.SetCellValue(sheet, fmt.Sprintf("D%d", row), entry.Vendor)
+            row++
+        }
     }
 
     if err := f.SaveAs("lanipcollect.xlsx"); err != nil {
@@ -258,14 +260,16 @@ func writeToExcel(macMap map[string][]string, macVendorMap map[string]string) {
     }
 }
 
-func getLast8Bits(ip string) int {
+func compareIPs(ip1, ip2 string) bool {
+    return ipToInt(ip1) < ipToInt(ip2)
+}
+
+func ipToInt(ip string) uint32 {
     parts := strings.Split(ip, ".")
-    if len(parts) != 4 {
-        return 0
+    var result uint32
+    for i := 0; i < 4; i++ {
+        part, _ := strconv.Atoi(parts[i])
+        result = result<<8 + uint32(part)
     }
-    lastPart, err := strconv.Atoi(parts[3])
-    if err != nil {
-        return 0
-    }
-    return lastPart
+    return result
 }
