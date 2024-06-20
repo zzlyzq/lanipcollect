@@ -21,6 +21,7 @@ This project is a LAN IP address collector written in Go. It captures ARP packet
 1. Install Go: [Go Installation Guide](https://golang.org/doc/install)
 2. Install libpcap development library:
     - For Debian/Ubuntu: `sudo apt-get install libpcap-dev`
+    - For CentOS: `sudo yum install libpcap-devel`
     - For macOS: `brew install libpcap`
 3. Clone the repository:
     ```sh

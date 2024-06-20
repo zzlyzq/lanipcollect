@@ -2,11 +2,14 @@ package main
 
 import (
     "bufio"
+    "encoding/json"
     "fmt"
     "io"
     "log"
     "net"
     "os"
+    "regexp"
+    "sort"
     "strconv"
     "strings"
     "time"
@@ -14,6 +17,7 @@ import (
     "github.com/google/gopacket"
     "github.com/google/gopacket/layers"
     "github.com/google/gopacket/pcap"
+    "github.com/xuri/excelize/v2"
 )
 
 var (
@@ -23,8 +27,9 @@ var (
     timeout     time.Duration = 30 * time.Second
     handle      *pcap.Handle
 
-    ipMap  = make(map[string]string)
-    macMap = make(map[string]string)
+    ipMap       = make(map[string]string)
+    macMap      = make(map[string][]string)
+    macVendorMap = make(map[string]string)
 
     logEnabled bool = true
     logger     *log.Logger
@@ -65,19 +70,19 @@ func main() {
             }
         }
 
-    // 检查网卡是否已经插入线缆
-    isConnected := false
-    for _, addr := range device.Addresses {
-        if addr.IP.IsGlobalUnicast() {
-            isConnected = true
-            break
+        // 检查网卡是否已经插入线缆
+        isConnected := false
+        for _, addr := range device.Addresses {
+            if addr.IP.IsGlobalUnicast() {
+                isConnected = true
+                break
+            }
         }
-    }
-    if isConnected {
-        fmt.Printf("   Status: Connected\n")
-    } else {
-        fmt.Printf("   Status: Disconnected\n")
-    }
+        if isConnected {
+            fmt.Printf("   Status: Connected\n")
+        } else {
+            fmt.Printf("   Status: Disconnected\n")
+        }
 
         fmt.Println()
     }
@@ -114,22 +119,153 @@ func main() {
                 ip := net.IP(arpPacket.SourceProtAddress).String()
                 mac := net.HardwareAddr(arpPacket.SourceHwAddress).String()
 
-                if existingMAC, ok := ipMap[ip]; ok {
-                    if existingMAC != mac {
-                        logger.Printf("Warning: IP %s has a different MAC address: %s (previously %s)\n", ip, mac, existingMAC)
-                    }
-                } else {
+                if _, ok := ipMap[ip]; !ok {
                     ipMap[ip] = mac
-                    if existingIP, ok := macMap[mac]; ok {
-                        if existingIP != ip {
-                            logger.Printf("Warning: MAC %s has a different IP address: %s (previously %s)\n", mac, ip, existingIP)
-                        }
-                    } else {
-                        macMap[mac] = ip
-                        logger.Printf("IP: %s, MAC: %s\n", ip, mac)
+                }
+
+                if _, ok := macMap[mac]; !ok {
+                    macMap[mac] = []string{}
+                    macVendorMap[mac] = getVendor(mac)
+                }
+
+                if !contains(macMap[mac], ip) {
+                    macMap[mac] = append(macMap[mac], ip)
+                }
+
+                // 包含厂商信息的结构
+                jsonData := make(map[string]interface{})
+                for mac, ips := range macMap {
+                    jsonData[mac] = map[string]interface{}{
+                        "ips":    ips,
+                        "vendor": macVendorMap[mac],
                     }
                 }
+
+                data, err := json.MarshalIndent(jsonData, "", "  ")
+                if err != nil {
+                    logger.Printf("Error marshalling JSON: %s\n", err)
+                    continue
+                }
+
+                err = os.WriteFile("lanipcollect.json", data, 0644)
+                if err != nil {
+                    logger.Printf("Error writing JSON file: %s\n", err)
+                }
+
+                logger.Printf("Updated mapping: MAC %s (%s) - IP %s\n", mac, macVendorMap[mac], ip)
+                writeToExcel(macMap, macVendorMap)
             }
         }
     }
+}
+
+func contains(slice []string, item string) bool {
+    for _, v := range slice {
+        if v == item {
+            return true
+        }
+    }
+    return false
+}
+
+func getVendor(mac string) string {
+    macRegex := regexp.MustCompile(`(?i)(?:[0-9A-F]{2}[:-]){5}[0-9A-F]{2}`)
+    if macRegex.MatchString(mac) {
+        mac = strings.ReplaceAll(mac, ":", "-")
+        mac = strings.ToUpper(mac)
+        if len(mac) >= 8 {
+            mac = mac[:8]
+        } else {
+            return "Unknown"
+        }
+
+        file, err := os.Open("oui.txt")
+        if err != nil {
+            fmt.Println("Error opening file:", err)
+            os.Exit(1)
+        }
+        defer file.Close()
+
+        scanner := bufio.NewScanner(file)
+        var organization string
+        for scanner.Scan() {
+            line := scanner.Text()
+            if strings.Contains(line, mac) && strings.Contains(line, "(hex)") {
+                organization = strings.TrimSpace(strings.Split(line, "(hex)")[1])
+                break
+            }
+        }
+
+        if err := scanner.Err(); err != nil {
+            fmt.Println("Error reading file:", err)
+            os.Exit(1)
+        }
+
+        if organization != "" {
+            return organization
+        }
+    }
+    return "Unknown"
+}
+
+func writeToExcel(macMap map[string][]string, macVendorMap map[string]string) {
+    f := excelize.NewFile()
+    sheet := "Sheet1"
+
+    // 设置表头
+    f.SetCellValue(sheet, "A1", "序号")
+    f.SetCellValue(sheet, "B1", "MAC地址")
+    f.SetCellValue(sheet, "C1", "IP地址")
+    f.SetCellValue(sheet, "D1", "厂商")
+
+    // 收集和排序数据
+    type MacEntry struct {
+        Mac     string
+        Ips     []string
+        Vendor  string
+    }
+
+    var entries []MacEntry
+    for mac, ips := range macMap {
+        // 按IP地址最后一个8bit排序
+        sort.Slice(ips, func(i, j int) bool {
+            return getLast8Bits(ips[i]) < getLast8Bits(ips[j])
+        })
+        entries = append(entries, MacEntry{
+            Mac:    mac,
+            Ips:    ips,
+            Vendor: macVendorMap[mac],
+        })
+    }
+
+    // 按第一个IP地址的最后一个8bit排序
+    sort.Slice(entries, func(i, j int) bool {
+        return getLast8Bits(entries[i].Ips[0]) < getLast8Bits(entries[j].Ips[0])
+    })
+
+    // 写入数据
+    row := 2
+    for i, entry := range entries {
+        f.SetCellValue(sheet, fmt.Sprintf("A%d", row), i+1)
+        f.SetCellValue(sheet, fmt.Sprintf("B%d", row), entry.Mac)
+        f.SetCellValue(sheet, fmt.Sprintf("C%d", row), strings.Join(entry.Ips, " "))
+        f.SetCellValue(sheet, fmt.Sprintf("D%d", row), entry.Vendor)
+        row++
+    }
+
+    if err := f.SaveAs("lanipcollect.xlsx"); err != nil {
+        log.Fatalf("Error saving Excel file: %s\n", err)
+    }
+}
+
+func getLast8Bits(ip string) int {
+    parts := strings.Split(ip, ".")
+    if len(parts) != 4 {
+        return 0
+    }
+    lastPart, err := strconv.Atoi(parts[3])
+    if err != nil {
+        return 0
+    }
+    return lastPart
 }
