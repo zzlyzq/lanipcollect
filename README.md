@@ -91,16 +91,19 @@ for target in "${targets[@]}"; do
     echo "Failed to build $output_name"
   fi
 done
-Save the script as build_all.sh and run it:
 ```
+
+Save the script as build_all.sh and run it:
 
 ```
 chmod +x build_all.sh
 ./build_all.sh
 JSON and XLSX Output
-The program generates two output files:
 ```
 
+The program generates two output files:
+
+```
 lanipcollect.json: Contains the collected IP and MAC address mappings with vendor information in JSON format.
 lanipcollect.xlsx: Contains the same data sorted and formatted in an Excel file.
 Sorting Rules
@@ -108,8 +111,10 @@ If a MAC address has multiple IP addresses, they are sorted by the last 8 bits o
 All MAC addresses are sorted based on the last 8 bits of their first IP address.
 Contributing
 Contributions are welcome! Please open an issue or submit a pull request for any bug fixes or enhancements.
+```
 
-License
+# License
+
 This project is licensed under the MIT License. See the LICENSE file for details.
 
 
